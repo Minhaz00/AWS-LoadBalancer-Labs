@@ -1,20 +1,32 @@
-# Routing Multiple Domain Names Using a Single ALB
 
 
-In today's cloud-based environments, efficiently managing multiple applications or services under different domain names is crucial for both cost management and operational efficiency. Traditionally, each domain might require a separate load balancer, leading to increased costs and complexity. However, with AWS Application Load Balancer (ALB), you can route traffic for multiple domain names (or subdomains) using a single load balancer through a feature known as host-based routing. This lab will guide you through the process of setting up and configuring this functionality using Pulumi.js for infrastructure as code (IaC) and the AWS Management Console for manual configuration.
-
-![](./images/./eks-lb.drawio.svg)
-
-This lab is important because it showcases how to optimize AWS resources by consolidating multiple load balancers into one, thereby reducing costs while ensuring efficient and organized traffic routing. This is particularly beneficial for organizations that manage multiple web applications or microservices under different domain names.
+# Route Traffic using Load Balancer Listener Rules
 
 
-## Task Description
+In this lab, you will learn how to set up an Application Load Balancer (ALB) in AWS to route traffic to multiple target groups based on specific conditions using listener rules. This advanced load balancing scenario is essential when dealing with complex web applications where routing traffic needs to be done based on the request's content, such as the HTTP method, the path, or even custom headers.
 
-In this lab, you will:
+![](./images/1.svg)
 
-- Set up the necessary AWS infrastructure using Pulumi.js, including a VPC, public subnets, EC2 instances running Nginx and Apache, and related resources.
-- Manually configure AWS Application Load Balancer (ALB) with host-based routing to direct traffic based on domain names.
-- Testing Host-Based Routing on AWS ALB Using `curl`
+
+Modern web applications often need to route requests based on various factors like request type, user agent, path, or even specific values in the query string. For instance, a GET request might fetch data, while a POST request might update it, and these operations could be handled by different servers or services. Routing traffic effectively not only improves performance but also ensures security and scalability.
+
+
+
+## Task Overview
+
+In this lab, you’ll create an Application Load Balancer (ALB) that routes HTTP traffic to multiple EC2 instances organized into different target groups. 
+
+![](./images/8.svg)
+
+The traffic will be routed based on rules applied to the requests, such as:
+
+- Specific values in query strings.
+- Specific HTTP headers.
+- The type of HTTP method (GET or POST).
+
+
+This setup allows for granular control over how traffic is handled, enabling the application to scale effectively and handle different request types appropriately.
+
 
 ## Step 1: Configure AWS CLI
 
@@ -23,8 +35,6 @@ Open Command Prompt or PowerShell and run:
 aws configure
 ```
 
-![alt text](./images/image-4.png)
-
 Enter your AWS Access Key ID, Secret Access Key, region (`ap-southeast-1`), and default output format (`json`).
 
 ## Step 2: Set Up a Pulumi Project
@@ -32,8 +42,8 @@ Enter your AWS Access Key ID, Secret Access Key, region (`ap-southeast-1`), and 
 ### Set Up a Pulumi Project
 Create a new directory for your project and navigate into it:
 ```sh
-mkdir alb-lab
-cd alb-lab
+mkdir alb-listener-rules
+cd alb-listener-rules
 ```
 
 ### Initialize a New Pulumi Project
@@ -58,16 +68,30 @@ chmod 400 MyKeyPair.pem
 
 We will use Pulumi.js to create the required infrastructure, including a VPC, public subnets, and EC2 instances.
 
+
+
 ### Define the Infrastructure
+
+![](./images/2.svg)
 
 Next, we will define the infrastructure in the `index.ts` file.
 
-1. **VPC**: Create a Virtual Private Cloud (VPC) to host your infrastructure.
-2. **Public Subnets**: Create two public subnets in different availability zones.
-3. **Internet Gateway**: Set up an internet gateway to allow traffic in and out of the VPC.
-4. **Route Table**: Create a route table and associate it with the public subnets.
-5. **Security Group**: Define a security group to control traffic to and from the EC2 instances.
-6. **EC2 Instances**: Launch two EC2 instances, one running Nginx and the other running Apache.
+1. **VPC**: Creates a Virtual Private Cloud (VPC) with a CIDR block of 10.0.0.0/16 to host the infrastructure.
+
+2. **Public Subnets**: Sets up two public subnets in different availability zones (ap-southeast-1a and ap-southeast-1b) for high availability.
+
+3. **Internet Gateway**: Establishes an Internet Gateway to allow traffic in and out of the VPC, enabling public internet access.
+
+4. **Route Table**: Creates a route table and associates it with both public subnets, directing internet-bound traffic through the Internet Gateway.
+
+5. **Security Group**: Defines a security group that allows all inbound and outbound traffic (0.0.0.0/0) for the EC2 instances.
+
+6. **EC2 Instances**: Launches four EC2 instances (t2.small) running Ubuntu:
+   - Two instances (`ubuntu-tg1-1`, `ubuntu-tg1-2`) in one target group
+   - Two instances (`ubuntu-tg2-1`, `ubuntu-tg2-2`) in another target group
+   - All instances are configured with Nginx and display a custom HTML page showing the `instance name`
+
+This infrastructure is designed for high availability across two availability zones in the ap-southeast-1 region, with public IP addresses exported for each EC2 instance.
 
 Here’s the code to set up the infrastructure:
 
@@ -80,27 +104,28 @@ const vpc = new aws.ec2.Vpc("my-vpc", {
     cidrBlock: "10.0.0.0/16",
     enableDnsSupport: true,
     enableDnsHostnames: true,
-    tags: { Name: "poridhi-pvc" },
+    tags: { Name: "poridhi-vpc" },
 
 });
 
-// Create the first public subnet in availability zone 1
+// Create Public Subnet 1
 const publicSubnet1 = new aws.ec2.Subnet("public-subnet-1", {
     vpcId: vpc.id,
-    cidrBlock: "10.0.1.0/24",  // Adjusted CIDR block for the first subnet
-    availabilityZone: "ap-southeast-1a",  // Adjust region and AZ as necessary
+    cidrBlock: "10.0.1.0/24",
+    availabilityZone: "ap-southeast-1a",
     mapPublicIpOnLaunch: true,
     tags: { Name: "public-subnet-1" },
 });
 
-// Create the second public subnet in availability zone 2
+// Create Public Subnet 2
 const publicSubnet2 = new aws.ec2.Subnet("public-subnet-2", {
     vpcId: vpc.id,
-    cidrBlock: "10.0.2.0/24",  // Adjusted CIDR block for the second subnet
-    availabilityZone: "ap-southeast-1b",  // Different availability zone
+    cidrBlock: "10.0.2.0/24",
+    availabilityZone: "ap-southeast-1b",
     mapPublicIpOnLaunch: true,
     tags: { Name: "public-subnet-2" },
 });
+
 
 // Create an Internet Gateway
 const internetGateway = new aws.ec2.InternetGateway("internet-gateway", {
@@ -131,7 +156,7 @@ new aws.ec2.RouteTableAssociation("route-table-association-2", {
 });
 
 // Security Group for EC2 instances
-const securityGroup = new aws.ec2.SecurityGroup("web-sg-all", {
+const securityGroup = new aws.ec2.SecurityGroup("web-sg", {
     vpcId: vpc.id,
     ingress: [
         { protocol: "tcp", fromPort: 22, toPort: 22, cidrBlocks: ["0.0.0.0/0"] },  // SSH
@@ -142,42 +167,94 @@ const securityGroup = new aws.ec2.SecurityGroup("web-sg-all", {
     ]
 });
 
-// Create an EC2 instance (Nginx) in the first public subnet
-const nginxInstance = new aws.ec2.Instance("nginx-instance", {
-    ami: "ami-01811d4912b4ccb26",  // Replace with a valid Nginx AMI ID
-    instanceType: "t2.micro",
-    subnetId: publicSubnet1.id,  // First public subnet
+// Define the AMI ID for Amazon ubuntu
+const amiId = "ami-01811d4912b4ccb26"; 
+
+// Define the instance type
+const instanceType = "t2.small";
+
+const createUserData = (instanceName) => `#!/bin/bash
+sudo apt update
+sudo apt install -y nginx
+
+# Hardcoded instance name
+INSTANCE_NAME="${instanceName}"
+
+# Create the HTML file
+echo "<html>
+<head><title>Instance Info</title></head>
+<body>
+<h1>Instance Name: $INSTANCE_NAME</h1>
+</body>
+</html>" > /var/www/html/index.html
+
+sudo systemctl restart nginx
+`;
+
+// Launch EC2 instances
+const ubuntuTg11 = new aws.ec2.Instance("ubuntu-tg1-1", {
+    instanceType: instanceType,
+    ami: amiId,
+    subnetId: publicSubnet1.id, 
     keyName: "MyKeyPair",
     associatePublicIpAddress: true,
     vpcSecurityGroupIds: [securityGroup.id],
-    userData: `#!/bin/bash
-    sudo apt update
-    sudo apt install -y nginx
-    sudo systemctl start nginx`,
-    tags: { Name: "nginx-server" },
+    userData: createUserData("ubuntu-tg1-1"),
+    tags: {
+        Name: "ubuntu-tg1-1",
+    },
 });
 
-// Create an EC2 instance (Apache) in the second public subnet
-const apacheInstance = new aws.ec2.Instance("apache-instance", {
-    ami: "ami-01811d4912b4ccb26",  // Replace with a valid Apache AMI ID
-    instanceType: "t2.micro",
-    subnetId: publicSubnet2.id,  // Second public subnet
+const ubuntuTg12 = new aws.ec2.Instance("ubuntu-tg1-2", {
+    instanceType: instanceType,
+    ami: amiId,
+    subnetId: publicSubnet2.id, 
     keyName: "MyKeyPair",
     associatePublicIpAddress: true,
     vpcSecurityGroupIds: [securityGroup.id],
-    userData: `#!/bin/bash
-    sudo apt update
-    sudo apt install -y apache2
-    sudo systemctl start apache2`,
-    tags: { Name: "apache-server" },
+    userData: createUserData("ubuntu-tg1-2"),
+    tags: {
+        Name: "ubuntu-tg1-2",
+    },
 });
 
-// Export the public IPs of the instances
+const ubuntuTg21 = new aws.ec2.Instance("ubuntu-tg2-1", {
+    instanceType: instanceType,
+    ami: amiId,
+    subnetId: publicSubnet1.id,  
+    keyName: "MyKeyPair",
+    associatePublicIpAddress: true,
+    vpcSecurityGroupIds: [securityGroup.id],
+    userData: createUserData("ubuntu-tg2-1"),
+    tags: {
+        Name: "ubuntu-tg2-1",
+    },
+});
+
+const ubuntuTg22 = new aws.ec2.Instance("ubuntu-tg2-2", {
+    instanceType: instanceType,
+    ami: amiId,
+    subnetId: publicSubnet2.id, 
+    keyName: "MyKeyPair",
+    associatePublicIpAddress: true,
+    vpcSecurityGroupIds: [securityGroup.id],
+    userData: createUserData("ubuntu-tg2-2"),
+    tags: {
+        Name: "ubuntu-tg2-2",
+    },
+});
+
+// Export the public IPs of the EC2 instances
 module.exports = {
-    nginxPublicIp: nginxInstance.publicIp,
-    apachePublicIp: apacheInstance.publicIp,
-};
+    ubuntuTg11PublicIp: ubuntuTg11.publicIp,
+    ubuntuTg12PublicIp: ubuntuTg12.publicIp,
+    ubuntuTg21PublicIp: ubuntuTg21.publicIp,
+    ubuntuTg22PublicIp: ubuntuTg22.publicIp,
+}
 ```
+
+Setting up these EC2 instances as your backend servers allows the ALB to distribute traffic across them. By preparing different instances and categorizing them into target groups, you’ll later be able to route traffic based on specific conditions to the most suitable group of instances.
+
 
 ### Deploy the Infrastructure
 Run the following command to deploy the infrastructure:
@@ -188,7 +265,7 @@ Run the following command to deploy the infrastructure:
 
 Confirm the changes and wait for the resources to be provisioned.
 
-![alt text](./images/image-5.png)
+![alt text](./images/image-1.png)
 
 After successful creation, we can see the EC2 instances from AWS console:
 
@@ -199,129 +276,176 @@ After successful creation, we can see the EC2 instances from AWS console:
 
 Once the infrastructure is created, verify that both Nginx and Apache servers are running by accessing their public IPs in a web browser.
 
-- **Nginx**: `http://<nginx-public-ip>`
+- **ubuntu-tg2-2**: `http://<ubuntu-tg2-2-public-ip>`
 
-    ![alt text](./images/image-6.png)
+   ![alt text](./images/image-2.png)
 
-- **Apache**: `http://<apache-public-ip>`
-
-    ![alt text](./images/image-7.png)
-
-You should see the default welcome pages for Nginx and Apache, respectively.
+We can try for other instances as well.
 
 
 
-## Step 5: Creating Target Groups
+## **Step 5: Creating Target Groups**
 
-Next, we'll create two target groups in the AWS Management Console, one for the Nginx server and another for the Apache server.
+Target groups in AWS are collections of resources (in this case, EC2 instances) that a load balancer uses to route traffic. In this step, you will create two target groups, each containing two of the EC2 instances.
 
-1. **Go to the EC2 Dashboard** and navigate to the **Target Groups** section.
-2. **Create a Target Group for Nginx**:
-    - Choose **Instance** as the target type.
-    - Name the target group (e.g., `nginx-target-group`).
-    - Select **HTTP** and port **80**.
-    - Choose the VPC created earlier.
-    - Register the Nginx instance to this target group.
+![](./images/4.svg)
 
-3. **Create a Target Group for Apache**:
-    - Repeat the process, naming this group (e.g., `apache-target-group`).
-    - Register the Apache instance to this target group.
+1. **Navigate to the Target Groups Section**:
+   - In the **EC2 Dashboard**, scroll down on the left navigation pane and select **Target Groups**.
+   - Click on the **Create target group** button.
 
+2. **Create the First Target Group**:
+   - **Choose** "Instances" as the target type.
+   - **Name** the target group `tg1`.
+   - **Set** the protocol to `HTTP` and the port to `80`.
+   - **Select** the two instances you named `ubuntu-tg1-1` and `ubuntu-tg1-2`.
+   - **Click** on **Create** to finalize.
 
-![alt text](./images/image-8.png)   
-
-
-
-## Step 6: Setting Up the Application Load Balancer (ALB)
-
-Now, we'll set up the ALB to handle host-based routing.
-
-### Create an Application Load Balancer
-- Navigate to the **Load Balancers** section and click **Create Load Balancer**.
-- Choose **Application Load Balancer**.
-- Set it to **Internet-facing** and select the VPC and subnets created earlier.
-- Configure the security group to allow all traffic from all source for now on.
-- Configure the Listeners. The default listener will be HTTP on port 80. Select one of the target group as default.
-- Review and create the ALB.
-
-Wait for a few minutes before the application load balancer status is `Active`.
-
-![alt text](./images/image-9.png)
+3. **Repeat for the Second Target Group**:
+   - **Name** the second target group `tg2`.
+   - **Select** the two instances you named `ubuntu-tg2-1` and `ubuntu-tg2-2`.
+   - **Follow** the same steps as for `tg1`.
 
 
-### Add rules 
-Add rules to forward requests based on the `Host header` (domain name) to the respective target groups. Go to the ALB and then the default rules. Select `Add rules` to create new rules:
-
-![alt text](./images/image-10.png)
+## **Step 3: Creating the Application Load Balancer**
 
 
+In this step, you will create an Application Load Balancer (ALB) that will distribute incoming HTTP requests to the EC2 instances in the target groups. The ALB will listen for incoming traffic on port 80.
 
-#### For `nginx`:
-- Requests for `nginx.example.com` forward to the `nginx-target-group`.
-
-    ![alt text](./images/image-11.png)
-
-- Create a new condition.
-
-    ![alt text](./images/image-12.png)
-
-- Select the target groups.
-
-    ![alt text](./images/image-13.png)
-
-Now, set the priority `1` and create.    
+![](./images/5.svg)
 
 
-#### For `apache`:
+1. **Navigate to Load Balancers**:
+   - In the **EC2 Dashboard**, scroll down and select **Load Balancers** from the left-hand menu.
+   - Click on **Create Load Balancer** and choose **Application Load Balancer**.
 
-Go to the ALB and then the default rules. Select `Add rules` to create new rules for the apache server in the same way. 
+2. **Configure the Load Balancer**:
+   - Name the load balancer `poridhi-alb`.
+   - Set the scheme to **Internet-facing** and the IP address type to **IPv4**.
+   - Select your VPC and at least two subnets in different Availability Zones (`ap-southeast-1a` and `ap-southeast-1b`).
 
-- Requests for `apache.example.com` forward to the `apache-target-group`.
-- Add a new condition. 
-- Select the target groups.
-- Set  priority `2` and create.
+3. **Set Security Groups**:
+   - **Choose** an existing security group or create a new one that allows HTTP traffic on port 80. We created a new security group. 
+
+   ![alt text](./images/image-3.png)
+
+4. **Set Up the Listener**:
+   - **Configure** a listener for HTTP on port 80.
+   - **Set the default action** to forward traffic to `tg1`.
+
+5. **Review and Create**:
+   - **Review** your settings and click **Create**.
 
 
-## Step 7: Testing the Configuration
+6. **Test the ALB**:
+   - **Open** a web browser and test the following URLs:
+   - **Query String Rule**: `<Load Balancer DNS>` should route to `tg1`.
 
-Using `curl` with the `-H` flag to manually set the `Host` header is a good approach for testing how your ALB routes requests based on different hostnames. This method is quick and effective for verifying that your ALB is correctly routing traffic to the appropriate backend services (e.g., Nginx, Apache) based on the `Host` header.
+      ![alt text](./images/image-7.png)
 
-### Identify Your ALB's DNS Name
-- Log in to the AWS Management Console.
-- Navigate to **EC2 Dashboard** > **Load Balancers**.
-- Select your ALB and note down the DNS name from the **Description** tab.
+      Refreash to see another instance in tg1.
 
-    ![alt text](./images/image-14.png)
-
-### Test Nginx Routing
-To test if requests to `nginx.example.com` are being routed correctly to the Nginx backend, run the following command:
-
-```bash
-curl -H "Host: nginx.example.com" http://<ALB-DNS-Name>
-```
-
-![alt text](./images/image-15.png)
-
-### Test Apache Routing
-To test if requests to `apache.example.com` are being routed correctly to the Apache backend, run the following command:
-
-```bash
-curl -H "Host: apache.example.com" http://<ALB-DNS-Name>
-```
-
-![alt text](./images/image-16.png)
-
-### Analyze the Response
-- If the routing is correctly configured, you should receive the expected response from the respective backend service (Nginx or Apache).
-- If the routing is incorrect, you may receive a response from the wrong service or an HTTP error.
+      ![alt text](./images/image-8.png)
 
 
 
+## **Step 4: Adding Listener Rules**
 
-## Conclusion
+Listener rules determine how the load balancer handles incoming requests. These rules use conditions to match specific attributes of the requests (such as HTTP method, URL path, or query string) and then route the traffic to the appropriate target group based on those conditions.
 
-In this lab, you've successfully set up a single AWS Application Load Balancer (ALB) to route traffic to different back-end servers based on the requested domain name. This setup is highly scalable and cost-effective for managing multiple applications or services under different domains, all through a single load balancer.
+### Understanding Condition Types
 
-This hands-on experience with Pulumi.js and AWS Management Console has equipped you with the skills to manage and deploy host-based routing in a real-world cloud environment. The consolidation of resources under a single ALB not only simplifies the architecture but also significantly reduces operational costs.
+#### **1. Host Header**:
+- **Purpose**: Routes traffic based on the hostname in the request.
+- **Example**: Traffic from `example.com` could be routed to a different target group than traffic from `api.example.com`.
+
+#### **2. Path Pattern**:
+- **Purpose**: Routes traffic based on the URL path.
+- **Example**: Requests to `/images/*` could be routed to a different target group optimized for handling image files, while `/videos/*` could go to another group.
+
+#### **3. HTTP Header**:
+- **Purpose**: Routes traffic based on specific headers, such as `User-Agent`.
+- **Example**: Requests from browsers like Firefox or Chrome can be routed differently based on the `User-Agent` header.
+
+#### **4. HTTP Request Method**:
+- **Purpose**: Routes traffic based on the HTTP method, such as `GET` or `POST`.
+- **Example**: GET requests might be handled by a group of servers optimized for fetching data, while POST requests are handled by servers dealing with data updates.
+
+#### **5. Query String**:
+- **Purpose**: Routes traffic based on key-value pairs in the URL's query string.
+- **Example**: If a query string contains `?type=video`, the request can be routed to a target group that handles video processing.
+
+#### **6. Source IP**:
+- **Purpose**: Routes traffic based on the source IP address of the client.
+- **Example**: Traffic from specific IP addresses could be directed to a restricted admin area or a separate service.
+
+### 1. Create a new Rule
+
+![](./images/6.svg)
+
+- In the **Load Balancers** section, select the load balancer you just created.
+- Go to the **Listeners** tab and click on **View/edit rules** for the HTTP listener on port 80.
+
+   ![alt text](./images/image-4.png)
+
+- **Name**: Name it `Rule1`.
+- **Add a Rule**: Add a condition based on the query string.
+- **Example Condition**: If the query string contains `?mykey=myvalue`, forward the traffic to `tg2`.
+
+   ![alt text](./images/image-5.png)
+
+- **Action**: Set the action to forward traffic to `tg2`.
+
+   ![alt text](./images/image-6.png)
 
 
+
+- Set priority `1` and save it. 
+
+#### Test this Conditions
+   - **Open** a web browser and test the following URLs:
+   - **Query String Rule**: `<Load Balancer DNS>?mykey=myvalue` should route to `tg2`.
+
+      ![alt text](./images/image-12.png)
+
+
+### 2. Create another Rule
+
+![](./images/7.svg)
+
+   - **Name**: Name it `Rule2`.
+   - **Add a Rule**: Add a condition based on the HTTP Header.
+   - **Example Condition**: If you open from Microsoft edge browser it will forward to `tg2`.
+
+      ![alt text](./images/image-9.png)
+
+   - Set priority and save it.
+
+#### Test this Conditions
+   - **Open** `Microsoft Edge` browser and test the following URLs:
+   - **Query String Rule**: `<Load Balancer DNS>` should route to `tg2`.
+
+      ![alt text](./images/image-10.png)   
+
+      ![alt text](./images/image-11.png)
+
+
+### 3. Create another Rule (Practice)
+
+   - **Add a Rule**: Add a condition based on the HTTP method.
+   - **Example Condition**: If the HTTP method is `POST`, forward the traffic to `tg2`.
+   - **Action**: Set the action to forward traffic to `tg2`.
+   - **Review** your rules and save them.
+
+#### Test this Conditions
+   - **HTTP Method Rule**: Use a tool like **Postman** to send a POST request to `<Load Balancer DNS>`. The traffic should route to `tg2`.
+
+
+
+Testing ensures that your listener rules are correctly set up and that the load balancer routes traffic as intended. It’s a crucial step to verify that the infrastructure you’ve built behaves as expected under different scenarios, ensuring that your application will perform correctly in a production environment.
+
+
+
+## **Conclusion**
+
+In this lab, you’ve successfully created an advanced load balancing setup using AWS’s Application Load Balancer. You’ve learned how to set up multiple EC2 instances, group them into target groups, create an ALB, and define listener rules to route traffic based on specific conditions. This setup allows for a highly flexible and scalable architecture, essential for modern web applications that require precise control over traffic distribution.
